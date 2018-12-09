@@ -5,15 +5,23 @@ var sse = require('./sse');
 var access_headers = require('./access-headers');
 var bcrypt = require('bcrypt');
 var crypto = require('crypto');
+var fs = require('fs');
 
 app.use(access_headers);
 app.use(sse);
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-function Persona(name, hash) {
+function Persona(name, hash, role) {
 	this.name = name,
-	this.hash = hash
+	this.hash = hash,
+	this.role = role
+}
+
+function Room(name, description) {
+	this.name = name,
+	this.description = description,
+	this.contents = []
 }
 
 function Connection(persona, response, token) {
@@ -22,8 +30,8 @@ function Connection(persona, response, token) {
 	this.token = token
 }
 
-var connections = [];
-var personas = [];
+var connections = {};
+var personas = {};
 
 // Broadcasts data to all connected users.
 function sendToAll(data)
@@ -38,7 +46,7 @@ function sendToAll(data)
 function printConnections()
 {
 	console.log("Connections:");
-	for (connection in connections)
+	for (token in connections)
 	{
 		if (connections[token].response !== undefined) console.log(connections[token].persona.name);
 	}
@@ -52,63 +60,81 @@ function generateToken()
 }
 
 // Validate client credentials to see if the client can be logged into the persona.
-function validateUser(req, res)
+// Returns the token on successful login, otherwise returns null.
+function validateUser(name, password)
 {
-	var persona = personas[req.params.name]
+	var persona = personas[name]
 	if (persona === undefined)
+	{
+		return null;
+	}
+	var result = bcrypt.compare(password, persona.hash);
+	if (result)
+	{
+		return joinUser(name)
+	}
+	else
+	{
+		return null;
+	}
+}
+
+// Generates connection data with no response and returns a token.
+// Response should be attached by the "/open" route.
+function joinUser(name)
+{
+	var persona = personas[name];
+	var newConnection = new Connection(persona, null, generateToken());
+	console.log("Session token for " + persona.name + " generated: " + newConnection.token);
+	connections[newConnection.token] = newConnection;
+	return newConnection.token;
+}
+
+function registerUser(name, password, role)
+{
+	if (personas[name] !== undefined)
+	{
+		return null;
+	}
+	var hash = bcrypt.hashSync(password, 10);
+	personas[name] = new Persona(name, hash, role);
+	fs.writeFile("data/personas.json", JSON.stringify(personas), function() {});
+	return joinUser(name);
+}
+
+app.post('/register/:name/:password', function (req, res) {
+	console.log("Register: " + JSON.stringify(req.params));
+	var token = registerUser(req.params.name, req.params.name, "mortal");
+	if (token === null)
+	{
+		res.status(200).send();
+	}
+	else
+	{
+		res.status(200).send({
+			type: "token",
+			content: token
+		});
+	}
+});
+
+app.post('/join/:name/:password', function (req, res) {
+	console.log("Login: " + JSON.stringify(req.params));
+	var token = validateUser(req.params.name, req.params.password);
+	if (token === null)
 	{
 		res.set({
 			"WWW-Authenticate": "Basic"
 		});
 		res.status(401).send();
-		return;
 	}
-	bcrypt.compare(req.params.password, persona.hash, function(err, result)
+	else
 	{
-		if (result)
-		{
-			joinUser(req, res)
-		}
-		else
-		{
-			res.set({
-				"WWW-Authenticate": "Basic"
-			});
-			res.status(401).send();
-			return;
-		}
-	})
-}
-
-// Set up SSE so the client receives messages broadcast to the persona.
-function joinUser(req, res)
-{
-	var persona = personas[req.params.name];
-	var newConnection = new Connection(persona, null, generateToken());
-	console.log("Session token for " + persona.name + " generated: " + newConnection.token);
-	connections[newConnection.token] = newConnection;
-	res.status(200).send({
-		type: "token",
-		content: newConnection.token
-	});
-}
-
-app.post('/register/:name/:password', function (req, res) {
-	console.log("Register: " + JSON.stringify(req.params));
-	if (personas[req.params.name] !== undefined)
-	{
-		res.status(200).send();
-		return;
+		res.status(200).send({
+			type: "token",
+			content: token
+		});
 	}
-	bcrypt.hash(req.params.password, 10, function(err, hash){
-		personas[req.params.name] = new Persona(req.params.name, hash);
-		joinUser(req, res);
-	});
-});
-
-app.post('/join/:name/:password', function (req, res) {
-	console.log("Login: " + JSON.stringify(req.params));
-	validateUser(req, res);
 });
 
 app.get('/open/:token', function(req, res){
@@ -126,7 +152,7 @@ app.get('/open/:token', function(req, res){
 	res.sseSetup();
 	for (token in connections)
 	{
-		if (connections[token].persona.name !== connection.persona.name)
+		if (token !== connection.token)
 		{
 			res.sseSend({
 				type: "connect",
@@ -172,6 +198,23 @@ app.post('/send/:token', function (req, res) {
 		res.status(401).send();
 	}
 });
+
+if (!fs.existsSync("data")){
+    fs.mkdirSync("data");
+}
+
+var personaData = fs.readFileSync("data/personas.json", { encoding: "utf8", flag: "a+" });
+if (personaData === "")
+{
+	var hash = bcrypt.hashSync("potrzebie", 10);
+	personas["God"] = new Persona("God", hash, "god");
+	fs.writeFile("data/personas.json", JSON.stringify(personas), function() {});
+}
+else
+{
+	personas = JSON.parse(personaData);
+	console.log(JSON.stringify(personas))
+}
 
 var server = app.listen(8081, function () {
    var host = server.address().address
