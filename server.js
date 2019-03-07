@@ -18,9 +18,9 @@ function Persona(name, hash, role) {
 	this.role = role
 }
 
-function Room(name, description) {
+function Room(name, desc) {
 	this.name = name,
-	this.description = description,
+	this.desc = desc,
 	this.contents = []
 }
 
@@ -32,6 +32,7 @@ function Connection(persona, response, token) {
 
 var connections = {};
 var personas = {};
+var rooms = [];
 
 // Broadcasts data to all connected users.
 function sendToAll(data)
@@ -165,6 +166,11 @@ app.get('/open/:token', function(req, res){
 		type: "connect",
 		name: connection.persona.name
 	});
+	res.sseSend({
+		type: "room",
+		name: rooms[0].name,
+		desc: rooms[0].desc
+	});
 	printConnections();
 	res.on("close", function()
 	{
@@ -215,6 +221,19 @@ else
 	personas = JSON.parse(personaData);
 	console.log(JSON.stringify(personas))
 }
+
+var roomData = fs.readFileSync("data/rooms.json", { encoding: "utf8", flag: "a+" });
+if (roomData === "")
+{
+	rooms[0] = new Room("Default Lounge", "It's the default lounge!");
+	fs.writeFile("data/rooms.json", JSON.stringify(rooms), function() {});
+}
+else
+{
+	rooms = JSON.parse(roomData);
+	console.log(JSON.stringify(rooms));
+}
+
 
 var server = app.listen(8081, function () {
    var host = server.address().address
